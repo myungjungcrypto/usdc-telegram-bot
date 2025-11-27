@@ -1,0 +1,28 @@
+{
+  "name": "usdc-telegram-bot",
+  "version": "1.0.0",
+  "description": "멀티유저 Arbitrum USDC 모니터링 텔레그램 봇",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "usdc",
+    "arbitrum",
+    "crypto",
+    "monitoring"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
