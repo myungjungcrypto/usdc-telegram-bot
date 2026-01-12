@@ -36,13 +36,18 @@ async function getBalance(address) {
 // 텔레그램 알림 전송
 async function sendAlert(bot, chatId, balance, address, threshold) {
   const user = getUser(chatId);
+
+  const bal = balance.toFixed(2);
+  const now = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+
   const message = `
+${bal} USDC
 🚨 <b>USDC 알림!</b>
 
-💰 현재 잔액: <b>${balance.toFixed(2)} USDC</b>
+💰 현재 잔액: <b>${bal} USDC</b>
 📍 주소: <code>${address}</code>
 💵 임계값: ${threshold} USDC
-⏰ 시간: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
+⏰ 시간: ${now}
 
 🔗 <a href="https://arbiscan.io/address/${address}">Arbiscan에서 보기</a>
 
@@ -50,15 +55,16 @@ ${user?.alertInterval ? `📌 다음 알림은 ${user.alertInterval}분 후에 �
   `.trim();
 
   try {
-    await bot.sendMessage(chatId, message, { 
+    await bot.sendMessage(chatId, message, {
       parse_mode: 'HTML',
-      disable_web_page_preview: true 
+      disable_web_page_preview: true
     });
     console.log(`✅ 알림 전송 완료: ${chatId}`);
   } catch (error) {
     console.error(`❌ 알림 전송 실패 (${chatId}):`, error.message);
   }
 }
+
 
 // 시간 포맷 함수
 function formatTime(seconds) {
