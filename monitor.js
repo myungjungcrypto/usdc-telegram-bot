@@ -36,18 +36,16 @@ async function getBalance(address) {
 // 텔레그램 알림 전송
 async function sendAlert(bot, chatId, balance, address, threshold) {
   const user = getUser(chatId);
-
   const bal = balance.toFixed(2);
-  const now = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 
   const message = `
 ${bal} USDC
-🚨 <b>USDC 알림!</b>
+🚨 <b>USDC 경고 (임계값 미만)</b>
 
 💰 현재 잔액: <b>${bal} USDC</b>
 📍 주소: <code>${address}</code>
-💵 임계값: ${threshold} USDC
-⏰ 시간: ${now}
+💵 임계값: ${threshold} USDC (미만 시 알림)
+⏰ 시간: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
 
 🔗 <a href="https://arbiscan.io/address/${address}">Arbiscan에서 보기</a>
 
@@ -55,16 +53,15 @@ ${user?.alertInterval ? `📌 다음 알림은 ${user.alertInterval}분 후에 �
   `.trim();
 
   try {
-    await bot.sendMessage(chatId, message, {
+    await bot.sendMessage(chatId, message, { 
       parse_mode: 'HTML',
-      disable_web_page_preview: true
+      disable_web_page_preview: true 
     });
     console.log(`✅ 알림 전송 완료: ${chatId}`);
   } catch (error) {
     console.error(`❌ 알림 전송 실패 (${chatId}):`, error.message);
   }
 }
-
 
 // 시간 포맷 함수
 function formatTime(seconds) {
@@ -94,17 +91,18 @@ async function monitorUser(chatId, bot) {
   }
   
   const timestamp = new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' });
-  const emoji = balance >= user.threshold ? '🔥' : '💤';
+  const emoji = balance < user.threshold ? '🔥' : '💤';
   
   console.log(`${emoji} [${timestamp}] ${chatId}: ${balance.toFixed(2)} USDC`);
   
   // 알림 체크
-  if (user.alertEnabled && balance >= user.threshold) {
+  // 알림 체크 (✅ 임계값 "미만"일 때 알림)
+  if (user.alertEnabled && balance < user.threshold) {
     const now = Date.now();
     const lastAlertTime = lastAlertTimes.get(chatId) || 0;
     const timeSinceLastAlert = now - lastAlertTime;
     const alertIntervalMs = user.alertInterval * 60 * 1000;
-    
+
     // 첫 알림이거나 알림 간격이 지났으면 알림 전송
     if (lastAlertTime === 0 || timeSinceLastAlert >= alertIntervalMs) {
       await sendAlert(bot, chatId, balance, user.address, user.threshold);
@@ -113,10 +111,10 @@ async function monitorUser(chatId, bot) {
       const remaining = Math.ceil((alertIntervalMs - timeSinceLastAlert) / 1000);
       console.log(`⏳ 사용자 ${chatId} 다음 알림까지 ${formatTime(remaining)} 남음`);
     }
-  } else if (balance < user.threshold) {
-    // 임계값 아래로 떨어지면 알림 타이머 리셋
+  } else if (balance >= user.threshold) {
+    // ✅ 임계값 이상으로 회복되면 알림 타이머 리셋
     if (lastAlertTimes.has(chatId)) {
-      console.log(`📉 사용자 ${chatId} 잔액 감소 - 알림 타이머 리셋`);
+      console.log(`📈 사용자 ${chatId} 잔액 회복 - 알림 타이머 리셋`);
       lastAlertTimes.delete(chatId);
     }
   }
