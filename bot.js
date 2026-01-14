@@ -194,7 +194,7 @@ bot.onText(/\/status/, async (msg) => {
 📊 <b>현재 상태</b>
 
 💰 현재 잔액: <b>${status.balance.toFixed(2)} USDC</b>
-${status.balance >= user.threshold ? '🔥' : '💤'} 상태: ${status.balance >= user.threshold ? '임계값 초과' : '정상'}
+${status.balance < user.threshold ? '🔥' : '✅'} 상태: ${status.balance < user.threshold ? '임계값 미만 (경고)' : '정상'}
 
 <b>설정</b>
 📍 주소(고정): <code>${DEFAULT_ADDRESS}</code>
