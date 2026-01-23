@@ -21,6 +21,20 @@ const contract = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider);
 const intervals = new Map();
 const lastAlertTimes = new Map();
 
+function normalizeDirection(input) {
+  const v = String(input || '').toLowerCase();
+  return v === 'above' ? 'above' : 'below';
+}
+
+function directionLabel(dir) {
+  return dir === 'above' ? '이상' : '미만';
+}
+
+function isAlertCondition(balance, threshold, dir) {
+  if (dir === 'above') return balance >= threshold;
+  return balance < threshold; // below
+}
+
 // USDC 잔액 조회
 async function getBalance(address) {
   try {
@@ -34,17 +48,17 @@ async function getBalance(address) {
 }
 
 // 텔레그램 알림 전송
-async function sendAlert(bot, chatId, balance, address, threshold) {
+async function sendAlert(bot, chatId, balance, address, threshold, dir) {
   const user = getUser(chatId);
   const bal = balance.toFixed(2);
 
   const message = `
 ${bal} USDC
-🚨 <b>USDC 경고 (임계값 미만)</b>
+🚨 <b>USDC 경고 (임계값 ${directionLabel(dir)})</b>
 
 💰 현재 잔액: <b>${bal} USDC</b>
 📍 주소: <code>${address}</code>
-💵 임계값: ${threshold} USDC (미만 시 알림)
+💵 임계값: ${threshold} USDC (${directionLabel(dir)}일 때 알림)
 ⏰ 시간: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
 
 🔗 <a href="https://arbiscan.io/address/${address}">Arbiscan에서 보기</a>
@@ -53,9 +67,9 @@ ${user?.alertInterval ? `📌 다음 알림은 ${user.alertInterval}분 후에 �
   `.trim();
 
   try {
-    await bot.sendMessage(chatId, message, { 
+    await bot.sendMessage(chatId, message, {
       parse_mode: 'HTML',
-      disable_web_page_preview: true 
+      disable_web_page_preview: true
     });
     console.log(`✅ 알림 전송 완료: ${chatId}`);
   } catch (error) {
@@ -65,9 +79,7 @@ ${user?.alertInterval ? `📌 다음 알림은 ${user.alertInterval}분 후에 �
 
 // 시간 포맷 함수
 function formatTime(seconds) {
-  if (seconds < 60) {
-    return `${seconds}초`;
-  }
+  if (seconds < 60) return `${seconds}초`;
   const minutes = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return secs > 0 ? `${minutes}분 ${secs}초` : `${minutes}분`;
@@ -76,45 +88,45 @@ function formatTime(seconds) {
 // 단일 사용자 모니터링
 async function monitorUser(chatId, bot) {
   const user = getUser(chatId);
-  
+
   if (!user || !user.isActive) {
     console.log(`⏸️ 사용자 ${chatId} 비활성 - 모니터링 중지`);
     stopMonitoring(chatId);
     return;
   }
-  
+
   const balance = await getBalance(user.address);
-  
+
   if (balance === null) {
     console.log(`⚠️ 사용자 ${chatId} 잔액 조회 실패`);
     return;
   }
-  
+
   const timestamp = new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' });
-  const emoji = balance < user.threshold ? '🔥' : '💤';
-  
+  const dir = normalizeDirection(user.alertDirection);
+  const alertNow = isAlertCondition(balance, user.threshold, dir);
+  const emoji = alertNow ? '🔥' : '💤';
+
   console.log(`${emoji} [${timestamp}] ${chatId}: ${balance.toFixed(2)} USDC`);
-  
-  // 알림 체크
-  // 알림 체크 (✅ 임계값 "미만"일 때 알림)
-  if (user.alertEnabled && balance < user.threshold) {
+
+  // 알림 체크 (below/above 공통)
+  if (user.alertEnabled && alertNow) {
     const now = Date.now();
     const lastAlertTime = lastAlertTimes.get(chatId) || 0;
     const timeSinceLastAlert = now - lastAlertTime;
     const alertIntervalMs = user.alertInterval * 60 * 1000;
 
-    // 첫 알림이거나 알림 간격이 지났으면 알림 전송
     if (lastAlertTime === 0 || timeSinceLastAlert >= alertIntervalMs) {
-      await sendAlert(bot, chatId, balance, user.address, user.threshold);
+      await sendAlert(bot, chatId, balance, user.address, user.threshold, dir);
       lastAlertTimes.set(chatId, now);
     } else {
       const remaining = Math.ceil((alertIntervalMs - timeSinceLastAlert) / 1000);
       console.log(`⏳ 사용자 ${chatId} 다음 알림까지 ${formatTime(remaining)} 남음`);
     }
-  } else if (balance >= user.threshold) {
-    // ✅ 임계값 이상으로 회복되면 알림 타이머 리셋
+  } else if (!alertNow) {
+    // 알림 조건에서 벗어나면 타이머 리셋 (재진입 시 즉시 알림 가능)
     if (lastAlertTimes.has(chatId)) {
-      console.log(`📈 사용자 ${chatId} 잔액 회복 - 알림 타이머 리셋`);
+      console.log(`📈 사용자 ${chatId} 알림 조건 해제 - 알림 타이머 리셋`);
       lastAlertTimes.delete(chatId);
     }
   }
@@ -123,30 +135,30 @@ async function monitorUser(chatId, bot) {
 // 모니터링 시작
 export function startMonitoring(chatId, bot) {
   const user = getUser(chatId);
-  
+
   if (!user) {
     console.error(`❌ 사용자 ${chatId} 설정을 찾을 수 없습니다`);
     return false;
   }
-  
+
   // 기존 interval 정리
   if (intervals.has(chatId)) {
     console.log(`🔄 사용자 ${chatId} 기존 모니터링 중지`);
     clearInterval(intervals.get(chatId));
   }
-  
+
   // 즉시 1회 실행
   monitorUser(chatId, bot);
-  
+
   // 주기적 실행
   const intervalMs = user.checkInterval * 1000;
   const intervalId = setInterval(() => {
     monitorUser(chatId, bot);
   }, intervalMs);
-  
+
   intervals.set(chatId, intervalId);
   console.log(`▶️ 사용자 ${chatId} 모니터링 시작 (${user.checkInterval}초 간격)`);
-  
+
   return true;
 }
 
@@ -157,37 +169,36 @@ export function stopMonitoring(chatId) {
     intervals.delete(chatId);
     lastAlertTimes.delete(chatId);
     console.log(`⏹️ 사용자 ${chatId} 모니터링 중지`);
-    
+
     // DB 업데이트
     updateUser(chatId, { isActive: false });
-    
+
     return true;
   }
-  
+
   return false;
 }
 
 // 현재 상태 조회
 export async function getStatus(chatId) {
   const user = getUser(chatId);
-  
-  if (!user) {
-    throw new Error('사용자를 찾을 수 없습니다');
-  }
-  
+
+  if (!user) throw new Error('사용자를 찾을 수 없습니다');
+
   const balance = await getBalance(user.address);
-  
-  if (balance === null) {
-    throw new Error('잔액 조회 실패');
-  }
-  
+  if (balance === null) throw new Error('잔액 조회 실패');
+
+  const dir = normalizeDirection(user.alertDirection);
+  const alertNow = isAlertCondition(balance, user.threshold, dir);
+
   const lastAlertTime = lastAlertTimes.get(chatId) || 0;
   const now = Date.now();
   const alertIntervalMs = user.alertInterval * 60 * 1000;
   const nextAlertIn = lastAlertTime > 0 ? alertIntervalMs - (now - lastAlertTime) : 0;
-  
+
   return {
     balance,
+    isAlertCondition: alertNow,
     nextAlertIn: Math.max(0, nextAlertIn),
     lastCheck: new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
   };

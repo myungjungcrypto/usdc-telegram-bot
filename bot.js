@@ -12,6 +12,20 @@ const DEFAULT_ADDRESS = '0xc47756133753280c37b227c24782984e021c4544';
 // ✅ /monitor에 아무것도 안 넣었을 때 기본 임계값
 const DEFAULT_THRESHOLD = 3000;
 
+// ✅ 알림 방향 기본값: below(미만) / above(이상)
+const DEFAULT_DIRECTION = 'below';
+const VALID_DIRECTIONS = new Set(['below', 'above']);
+
+function normalizeDirection(input) {
+  if (!input) return null;
+  const v = String(input).toLowerCase();
+  return VALID_DIRECTIONS.has(v) ? v : null;
+}
+
+function directionLabel(dir) {
+  return dir === 'above' ? '이상' : '미만';
+}
+
 if (BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
   console.error('❌ 에러: BOT_TOKEN 환경변수를 설정해주세요!');
   process.exit(1);
@@ -30,25 +44,34 @@ bot.onText(/\/start/, async (msg) => {
   const welcome = `
 🤖 <b>USDC 모니터링 봇</b>
 
-Arbitrum USDC 잔액을 실시간 모니터링하고, 설정한 임계값 미만이면 알림을 보내드립니다.
+Arbitrum USDC 잔액을 실시간 모니터링하고, 설정한 임계값 기준으로 알림을 보내드립니다.
+(기본: 임계값 <b>미만</b>일 때 알림)
 
 <b>📍 모니터링 주소(고정)</b>
 <code>${DEFAULT_ADDRESS}</code>
 
 <b>🚀 빠른 시작</b>
-• 기본 임계값(${DEFAULT_THRESHOLD} USDC)로 시작:
+• 기본 임계값(${DEFAULT_THRESHOLD} USDC), 기본 방향(below=미만)으로 시작:
 <code>/monitor</code>
 
-• 임계값만 지정해서 시작:
+• 임계값만 지정 (기본: below=미만):
 <code>/monitor 5000</code>
 
+• 임계값 + 방향 지정:
+<code>/monitor 5000 below</code>
+<code>/monitor 5000 above</code>
+
+• 방향만 지정 (임계값은 기본값 사용):
+<code>/monitor above</code>
+
 <b>📋 명령어</b>
-/monitor [임계값] - 모니터링 시작 (주소는 고정)
+/monitor [임계값] [below|above] - 모니터링 시작 (주소는 고정)
 /stop - 모니터링 중지
 /status - 현재 상태 및 잔액 확인
 
 /settings - 현재 설정 보기
-/threshold [금액] - 임계값 변경 (USDC)
+/threshold [금액] [below|above] - 임계값 변경 (USDC)
+/direction [below|above] - 알림 조건 방향 변경
 /checkinterval [초] - 체크 간격 변경 (10~3600)
 /alertinterval [분] - 알림 간격 변경 (1~1440)
 /alerton - 알림 켜기
@@ -67,14 +90,24 @@ bot.onText(/\/help/, async (msg) => {
 <b>📖 도움말</b>
 
 <b>1) 모니터링 시작 (주소 고정)</b>
-• 기본 임계값(${DEFAULT_THRESHOLD} USDC)로 시작:
+• 기본 임계값(${DEFAULT_THRESHOLD} USDC), 기본 방향(below=미만)으로 시작:
 <code>/monitor</code>
 
-• 임계값만 지정:
+• 임계값만 지정 (기본: below=미만):
 <code>/monitor 3000</code>
+
+• 임계값 + 방향 지정:
+<code>/monitor 3000 below</code>
+<code>/monitor 3000 above</code>
+
+• 방향만 지정:
+<code>/monitor above</code>
 
 <b>2) 설정 변경</b>
 <code>/threshold 500</code> - 임계값을 500 USDC로 변경
+<code>/threshold 500 above</code> - 임계값을 500으로 바꾸고 “이상”일 때 알림
+<code>/direction below</code> - 임계값 <b>미만</b>일 때 알림
+<code>/direction above</code> - 임계값 <b>이상</b>일 때 알림
 <code>/checkinterval 30</code> - 30초마다 체크 (10~3600)
 <code>/alertinterval 10</code> - 10분마다 알림 (1~1440)
 <code>/alertoff</code> - 알림 끄기 (모니터링은 계속)
@@ -94,26 +127,52 @@ bot.onText(/\/help/, async (msg) => {
   await bot.sendMessage(chatId, help, { parse_mode: 'HTML' });
 });
 
-// /monitor - 모니터링 시작 (주소 고정, 임계값만 optional)
-bot.onText(/\/monitor(?:\s+(\S+))?/, async (msg, match) => {
+// /monitor - 모니터링 시작 (주소 고정, 임계값 + 방향 optional)
+// 허용 케이스:
+// /monitor
+// /monitor 3000
+// /monitor above
+// /monitor 3000 above
+// /monitor above 3000
+bot.onText(/\/monitor(?:\s+(\S+))?(?:\s+(\S+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
 
-  // 사용자가 /monitor 뒤에 뭘 적었는지 (임계값만 받음)
-  const arg1 = match?.[1] ?? null;
+  const a1 = match?.[1] ?? null;
+  const a2 = match?.[2] ?? null;
 
-  // ✅ threshold 결정: 없으면 DEFAULT_THRESHOLD, 있으면 숫자인지 검사
   let threshold = DEFAULT_THRESHOLD;
+  let alertDirection = DEFAULT_DIRECTION;
 
-  if (arg1) {
-    // 숫자만 허용 (예: 3000 또는 3000.5)
-    if (!/^\d+(\.\d+)?$/.test(arg1)) {
+  const cand1Dir = normalizeDirection(a1);
+  const cand2Dir = normalizeDirection(a2);
+
+  const cand1Num = a1 && /^\d+(\.\d+)?$/.test(a1) ? parseFloat(a1) : null;
+  const cand2Num = a2 && /^\d+(\.\d+)?$/.test(a2) ? parseFloat(a2) : null;
+
+  if (a1 && !a2) {
+    if (cand1Num !== null) threshold = cand1Num;
+    else if (cand1Dir) alertDirection = cand1Dir;
+    else {
       return bot.sendMessage(
         chatId,
-        `❌ 사용법: /monitor [임계값]\n\n예시:\n<code>/monitor</code>\n<code>/monitor 3000</code>`,
+        `❌ 사용법: /monitor [임계값] [below|above]\n\n예시:\n<code>/monitor</code>\n<code>/monitor 3000</code>\n<code>/monitor 3000 below</code>\n<code>/monitor 3000 above</code>\n<code>/monitor above</code>`,
         { parse_mode: 'HTML' }
       );
     }
-    threshold = parseFloat(arg1);
+  } else if (a1 && a2) {
+    if (cand1Num !== null && cand2Dir) {
+      threshold = cand1Num;
+      alertDirection = cand2Dir;
+    } else if (cand1Dir && cand2Num !== null) {
+      threshold = cand2Num;
+      alertDirection = cand1Dir;
+    } else {
+      return bot.sendMessage(
+        chatId,
+        `❌ 사용법: /monitor [임계값] [below|above]\n\n예시:\n<code>/monitor</code>\n<code>/monitor 3000</code>\n<code>/monitor 3000 below</code>\n<code>/monitor 3000 above</code>\n<code>/monitor above</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
   }
 
   if (!threshold || threshold <= 0) {
@@ -122,19 +181,18 @@ bot.onText(/\/monitor(?:\s+(\S+))?/, async (msg, match) => {
 
   const address = DEFAULT_ADDRESS.toLowerCase();
 
-  // 사용자 설정 저장
   const config = {
     address,
     threshold,
-    checkInterval: 10, // 기본 10초
-    alertInterval: 5,  // 기본 5분
+    alertDirection,
+    checkInterval: 10,
+    alertInterval: 5,
     alertEnabled: true,
     isActive: true
   };
 
   saveUser(chatId, config);
 
-  // 모니터링 시작
   startMonitoring(chatId, bot);
 
   const response = `
@@ -142,6 +200,7 @@ bot.onText(/\/monitor(?:\s+(\S+))?/, async (msg, match) => {
 
 📍 주소(고정): <code>${DEFAULT_ADDRESS}</code>
 💰 임계값: ${threshold} USDC
+📌 알림 조건: 임계값 <b>${directionLabel(alertDirection)}</b>일 때
 ⏱️ 체크 간격: 10초
 🔔 알림 간격: 5분
 
@@ -194,11 +253,12 @@ bot.onText(/\/status/, async (msg) => {
 📊 <b>현재 상태</b>
 
 💰 현재 잔액: <b>${status.balance.toFixed(2)} USDC</b>
-${status.balance < user.threshold ? '🔥' : '✅'} 상태: ${status.balance < user.threshold ? '임계값 미만 (경고)' : '정상'}
+${status.isAlertCondition ? '🔥' : '✅'} 상태: ${status.isAlertCondition ? `임계값 ${directionLabel(user.alertDirection)} (경고)` : '정상'}
 
 <b>설정</b>
 📍 주소(고정): <code>${DEFAULT_ADDRESS}</code>
 💵 임계값: ${user.threshold} USDC
+📌 알림 조건: 임계값 ${directionLabel(user.alertDirection)}일 때
 ⏱️ 체크 간격: ${user.checkInterval}초
 🔔 알림 간격: ${user.alertInterval}분
 ${nextAlert}
@@ -232,13 +292,15 @@ bot.onText(/\/settings/, async (msg) => {
 
 📍 주소(고정): <code>${DEFAULT_ADDRESS}</code>
 💵 임계값: ${user.threshold} USDC
+📌 알림 조건: 임계값 ${directionLabel(user.alertDirection)}일 때
 ⏱️ 체크 간격: ${user.checkInterval}초
 🔔 알림 간격: ${user.alertInterval}분
 ${user.alertEnabled ? '✅' : '🔕'} 알림: ${user.alertEnabled ? '켜짐' : '꺼짐'}
 ${user.isActive ? '▶️' : '⏸️'} 상태: ${user.isActive ? '실행 중' : '중지됨'}
 
 <b>변경 명령어:</b>
-/threshold [금액] - 임계값 변경
+/threshold [금액] [below|above] - 임계값 변경
+/direction [below|above] - 알림 조건 방향 변경
 /checkinterval [초] - 체크 간격 변경
 /alertinterval [분] - 알림 간격 변경
 /alerton, /alertoff - 알림 켜기/끄기
@@ -247,16 +309,20 @@ ${user.isActive ? '▶️' : '⏸️'} 상태: ${user.isActive ? '실행 중' : 
   await bot.sendMessage(chatId, response, { parse_mode: 'HTML' });
 });
 
-// /threshold - 임계값 변경
-bot.onText(/\/threshold\s+(\d+(?:\.\d+)?)/, async (msg, match) => {
+// /threshold - 임계값 변경 (옵션: 방향도 같이 변경)
+bot.onText(/\/threshold\s+(\d+(?:\.\d+)?)(?:\s+(below|above))?/i, async (msg, match) => {
   const chatId = msg.chat.id;
   const newThreshold = parseFloat(match[1]);
+  const newDir = normalizeDirection(match?.[2] ?? null);
 
   if (newThreshold <= 0) {
     return bot.sendMessage(chatId, '❌ 임계값은 0보다 큰 숫자여야 합니다.');
   }
 
-  const updated = updateUserConfig(chatId, { threshold: newThreshold });
+  const updates = { threshold: newThreshold };
+  if (newDir) updates.alertDirection = newDir;
+
+  const updated = updateUserConfig(chatId, updates);
 
   if (!updated) {
     return bot.sendMessage(
@@ -266,13 +332,50 @@ bot.onText(/\/threshold\s+(\d+(?:\.\d+)?)/, async (msg, match) => {
     );
   }
 
-  await bot.sendMessage(chatId, `✅ 임계값이 변경되었습니다.\n\n💵 새 임계값: ${newThreshold} USDC`);
+  const lines = [
+    '✅ 임계값이 변경되었습니다.',
+    '',
+    `💵 새 임계값: ${newThreshold} USDC`
+  ];
+  if (newDir) lines.push(`📌 알림 조건: 임계값 ${directionLabel(newDir)}일 때`);
+
+  await bot.sendMessage(chatId, lines.join('\n'));
+});
+
+// /direction - 알림 방향 변경
+bot.onText(/\/direction\s+(below|above)/i, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const dir = normalizeDirection(match?.[1]);
+
+  if (!dir) {
+    return bot.sendMessage(
+      chatId,
+      `❌ 사용법: /direction [below|above]\n\n예시:\n<code>/direction below</code>\n<code>/direction above</code>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  const updated = updateUserConfig(chatId, { alertDirection: dir });
+
+  if (!updated) {
+    return bot.sendMessage(
+      chatId,
+      `❌ 먼저 /monitor로 모니터링을 시작해주세요.\n예: <code>/monitor</code>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  // 방향 바꾸면 쿨다운이 남아있을 수 있으니 모니터링 재시작해서 즉시 반영
+  stopMonitoring(chatId);
+  startMonitoring(chatId, bot);
+
+  await bot.sendMessage(chatId, `✅ 알림 조건이 변경되었습니다.\n\n📌 임계값 ${directionLabel(dir)}일 때 알림`);
 });
 
 // /checkinterval - 체크 간격 변경
 bot.onText(/\/checkinterval\s+(\d+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const newInterval = parseInt(match[1]);
+  const newInterval = parseInt(match[1], 10);
 
   if (newInterval < 10) {
     return bot.sendMessage(chatId, '❌ 체크 간격은 최소 10초 이상이어야 합니다.');
@@ -292,7 +395,6 @@ bot.onText(/\/checkinterval\s+(\d+)/, async (msg, match) => {
     );
   }
 
-  // 모니터링 재시작 (새 간격 적용)
   stopMonitoring(chatId);
   startMonitoring(chatId, bot);
 
@@ -302,7 +404,7 @@ bot.onText(/\/checkinterval\s+(\d+)/, async (msg, match) => {
 // /alertinterval - 알림 간격 변경
 bot.onText(/\/alertinterval\s+(\d+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const newInterval = parseInt(match[1]);
+  const newInterval = parseInt(match[1], 10);
 
   if (newInterval < 1) {
     return bot.sendMessage(chatId, '❌ 알림 간격은 최소 1분 이상이어야 합니다.');
@@ -375,10 +477,11 @@ let activeCount = 0;
 
 for (const [chatId, config] of Object.entries(users)) {
   if (config.isActive) {
-    // 혹시 예전 데이터에 address가 달라도, 고정 주소로 덮어서 재개
+    // 기존 데이터에 alertDirection 없으면 below로 보정 + 주소 고정
     saveUser(chatId, {
       ...config,
-      address: DEFAULT_ADDRESS.toLowerCase()
+      address: DEFAULT_ADDRESS.toLowerCase(),
+      alertDirection: normalizeDirection(config.alertDirection) || DEFAULT_DIRECTION
     });
     startMonitoring(chatId, bot);
     activeCount++;
